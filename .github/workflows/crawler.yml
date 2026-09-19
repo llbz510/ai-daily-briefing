@@ -45,7 +45,7 @@ concurrency:
   cancel-in-progress: true
 
 permissions:
-  contents: read
+  contents: write      # 心跳提交需要
   actions: write
 
 jobs:
@@ -60,6 +60,35 @@ jobs:
           fetch-depth: 1
           clean: true
 
+      # ────────────────────────────────────────────────────────────────
+      # 💓 HEARTBEAT / 心跳
+      #
+      # GitHub 会在仓库连续 60 天没有提交时，自动禁用定时工作流。
+      # TrendRadar 的 GitHub Actions 版不向仓库提交任何内容（output/ 也不提交），
+      # 所以这里每 45 天主动提交一个空的心跳文件，保持仓库活跃，
+      # 避免日报在两个月后静默停止。
+      #
+      # 只有定时触发时才会检查，手动触发不提交；失败也不影响主流程。
+      # ────────────────────────────────────────────────────────────────
+      - name: Heartbeat (keep scheduled workflow alive)
+        if: success() && github.event_name == 'schedule'
+        continue-on-error: true
+        run: |
+          LAST=$(git log -1 --format=%ct 2>/dev/null || echo 0)
+          NOW=$(date +%s)
+          DAYS=$(( (NOW - LAST) / 86400 ))
+          echo "距最近一次提交: ${DAYS} 天"
+          if [ "$DAYS" -ge 45 ]; then
+            mkdir -p .github
+            date -u +"%Y-%m-%dT%H:%M:%SZ" > .github/.heartbeat
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add .github/.heartbeat
+            git commit -m "chore: heartbeat — keep scheduled workflow active" || echo "无变化可提交"
+            git push || echo "推送失败（已忽略，不影响日报）"
+          else
+            echo "仓库仍活跃，无需心跳提交"
+          fi
       # 已移除上游的「7 天试用期签到」限制：
       #   本仓库是公开仓库，GitHub Actions 分钟数免费无限量，该限制无实际成本，
       #   且一旦忘记签到会导致日报静默停止。如需恢复，见 git 历史或上游 crawler.yml。
