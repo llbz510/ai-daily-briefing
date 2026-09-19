@@ -1,0 +1,6 @@
+
+# local dev / generated custom feeds
+.venv/
+output/custom-feeds/
+__pycache__/
+*.pyc
