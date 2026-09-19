@@ -387,6 +387,8 @@ def main() -> int:
     ap.add_argument("--serve-base", default=SERVE_BASE)
     ap.add_argument("--max-age-days", type=int, default=14)
     ap.add_argument("--max-items", type=int, default=60)
+    ap.add_argument("--only", default="",
+                    help="调试用：只处理指定 id 的源（逗号分隔），例如 --only policy-gov")
     args = ap.parse_args()
 
     cfg_path = Path(args.config)
@@ -401,6 +403,16 @@ def main() -> int:
     feeds = ((doc.get("rss") or {}).get("feeds")) or []
     pol_entries, mkt_entries = split_entries(feeds)
     log(f"发现自定义源: policysrc {len(pol_entries)} 个 / marketsrc {len(mkt_entries)} 个")
+
+    only = {s.strip() for s in args.only.split(",") if s.strip()}
+    if only:
+        pol_entries = [e for e in pol_entries if e[0] in only]
+        mkt_entries = [e for e in mkt_entries if e[0] in only]
+        log(f"[调试模式] 只处理: {', '.join(sorted(only))} "
+            f"(匹配到 policy {len(pol_entries)} / market {len(mkt_entries)})")
+        if not pol_entries and not mkt_entries:
+            log("[调试模式] 没有匹配的源，检查 id 是否写对")
+            return 1
 
     out_dir = Path(args.out)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -427,7 +439,10 @@ def main() -> int:
         market_url = f"{args.serve_base}/market.xml"
 
     log("")
-    write_runtime_config(cfg_path, out_dir / "config.runtime.yaml", policy_url, market_url)
+    if only:
+        log("[调试模式] 跳过运行时配置生成（不影响仓库配置）")
+    else:
+        write_runtime_config(cfg_path, out_dir / "config.runtime.yaml", policy_url, market_url)
     log(f"输出目录: {out_dir.resolve()}")
     return 0
 
