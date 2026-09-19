@@ -100,7 +100,7 @@ jobs:
 
       - name: Build custom feeds (policy + market)
         if: success()
-        run: python scripts/custom_feeds/build_feeds.py --config config/custom_feeds.yaml --out output/custom-feeds
+        run: python scripts/custom_feeds/build_feeds.py --config config/config.yaml --out output/custom-feeds
 
       - name: Serve custom feeds on localhost
         if: success()
@@ -153,7 +153,14 @@ jobs:
           S3_ENDPOINT_URL: ${{ secrets.S3_ENDPOINT_URL }}
           S3_REGION: ${{ secrets.S3_REGION }}
           GITHUB_ACTIONS: true
-        run: uv run python -m trendradar
+        run: |
+          if [ -f output/custom-feeds/config.runtime.yaml ]; then
+            export CONFIG_PATH=output/custom-feeds/config.runtime.yaml
+            echo "使用运行时配置: $CONFIG_PATH"
+          else
+            echo "无自定义源，使用 config/config.yaml"
+          fi
+          uv run python -m trendradar
 
       # --------------------------------------------------------------------------------
       # ☁️ CLOUDFLARE PAGES DEPLOY / 部署到 Cloudflare Pages（可选）

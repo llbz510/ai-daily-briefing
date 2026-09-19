@@ -141,17 +141,53 @@ rss:
       name: "雅虎财经"
       url: "https://finance.yahoo.com/news/rssindex"
 
-    # —— 自定义源：由 scripts/custom_feeds/build_feeds.py 生成，
-    #     在同一个 workflow 里用本地 HTTP 服务(127.0.0.1:8899)提供 ——
-    - id: "policy-cn"
-      name: "政策发布"
-      url: "http://127.0.0.1:8899/policy.xml"
-      max_age_days: 0                 # 生成器已按 custom_feeds.yaml 过滤时效
+    # ===============================================================
+    # 政策 / 行情 自定义源
+    # ---------------------------------------------------------------
+    # url 用两个自定义协议，由 scripts/custom_feeds/build_feeds.py 解析
+    # 并合成标准 RSS 后再交给 TrendRadar：
+    #
+    #   policysrc:gov_search
+    #       国务院政策文件库（官方 JSON 接口，最权威）
+    #   policysrc:gov_search?categories=gongwen&per_page=20
+    #       可选参数，categories 取值 gongwen/bumenfile/otherfile/gongbao
+    #   policysrc:https://某政府站/列表页
+    #       任意列表页，自动探测结构，无需写选择器
+    #   marketsrc:代码[=名称][,代码[=名称]...]
+    #       腾讯行情接口。A股 sh600519 / sz000001；A股指数 sh000001；
+    #       港股 hk00700；港股指数 hkHSI / hkHSTECH；美股 usAAPL；
+    #       美股指数 usINX / usIXIC / usDJI。不写名称会自动取。
+    #
+    # 💡 这些条目可以直接用官方可视化编辑器管理：
+    #    https://sansan0.github.io/TrendRadar/  → RSS 源 面板 → 添加/编辑/启用
+    # ===============================================================
+    - id: "policy-gov"
+      name: "国务院·政策文件库"
+      url: "policysrc:gov_search"
 
-    - id: "market-quote"
+    - id: "policy-miit"
+      name: "工信部·政务公开"
+      url: "policysrc:https://www.miit.gov.cn/zwgk/index.html"
+
+    - id: "policy-csrc"
+      name: "证监会·主动公开目录"
+      url: "policysrc:http://www.csrc.gov.cn/csrc/c100035/zfxxgk_zdgk.shtml"
+
+    - id: "policy-cac"
+      name: "网信办·网信发布"
+      url: "policysrc:https://www.cac.gov.cn/wxzw/wxfb/A093702index_1.htm"
+
+    - id: "policy-stats"
+      name: "国家统计局·最新发布"
+      url: "policysrc:https://www.stats.gov.cn/sj/zxfb/"
+
+    - id: "policy-pbc"
+      name: "中国人民银行·法规"
+      url: "policysrc:http://www.pbc.gov.cn/tiaofasi/144941/index.html"
+
+    - id: "market-quotes"
       name: "行情速览"
-      url: "http://127.0.0.1:8899/market.xml"
-      max_age_days: 0
+      url: "marketsrc:sh000001=上证指数,sz399001=深证成指,sz399006=创业板指,sh000688=科创50,sh000300=沪深300,sh000905=中证500,hkHSI=恒生指数,hkHSTECH=恒生科技指数,usINX=标普500,usIXIC=纳斯达克,sh600519=贵州茅台,sz000001=平安银行,hk00700=腾讯控股,usAAPL=苹果,usNVDA=英伟达"
 
     # 自定义源示例
     # - id: "custom-feed"
