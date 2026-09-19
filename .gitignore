@@ -4,3 +4,6 @@
 output/custom-feeds/
 __pycache__/
 *.pyc
+
+# 运行时生成的配置（含本地地址，不入库）
+config/config.runtime.yaml

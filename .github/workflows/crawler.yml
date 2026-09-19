@@ -155,8 +155,8 @@ jobs:
           S3_REGION: ${{ secrets.S3_REGION }}
           GITHUB_ACTIONS: true
         run: |
-          if [ -f output/custom-feeds/config.runtime.yaml ]; then
-            export CONFIG_PATH=output/custom-feeds/config.runtime.yaml
+          if [ -f config/config.runtime.yaml ]; then
+            export CONFIG_PATH=config/config.runtime.yaml
             echo "使用运行时配置: $CONFIG_PATH"
           else
             echo "无自定义源，使用 config/config.yaml"

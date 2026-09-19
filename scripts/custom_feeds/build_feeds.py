@@ -468,7 +468,11 @@ def main() -> int:
     if only:
         log("[调试模式] 跳过运行时配置生成（不影响仓库配置）")
     else:
-        write_runtime_config(cfg_path, out_dir / "config.runtime.yaml", policy_url, market_url)
+        # 注意：必须与原配置放在同一目录！
+        # TrendRadar 用 Path(CONFIG_PATH).parent 去定位 timeline.yaml，
+        # 放到别处会导致「未知的预设模板」并中断整条流程。
+        write_runtime_config(cfg_path, cfg_path.parent / "config.runtime.yaml",
+                             policy_url, market_url)
     log(f"输出目录: {out_dir.resolve()}")
     return 0
 
