@@ -141,6 +141,18 @@ rss:
       name: "雅虎财经"
       url: "https://finance.yahoo.com/news/rssindex"
 
+    # —— 自定义源：由 scripts/custom_feeds/build_feeds.py 生成，
+    #     在同一个 workflow 里用本地 HTTP 服务(127.0.0.1:8899)提供 ——
+    - id: "policy-cn"
+      name: "政策发布"
+      url: "http://127.0.0.1:8899/policy.xml"
+      max_age_days: 0                 # 生成器已按 custom_feeds.yaml 过滤时效
+
+    - id: "market-quote"
+      name: "行情速览"
+      url: "http://127.0.0.1:8899/market.xml"
+      max_age_days: 0
+
     # 自定义源示例
     # - id: "custom-feed"
     #   name: "自定义源"
