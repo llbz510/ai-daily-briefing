@@ -35,7 +35,8 @@ on:
     #   "15 * * * *"     → 每小时第15分钟 / minute 15 every hour
     #   "30 0-14 * * *"  → 北京时间 8:00-22:00 每小时第30分钟 / Beijing 8am-10pm
     #
-    - cron: "33 * * * *"
+    # 每天早上 8:00（北京时间）= UTC 0:00
+    - cron: "0 0 * * *"
 
   workflow_dispatch:
 
@@ -100,7 +101,7 @@ jobs:
 
       - name: Build custom feeds (policy + market)
         if: success()
-        run: python scripts/custom_feeds/build_feeds.py --config config/config.yaml --out output/custom-feeds
+        run: python scripts/custom_feeds/build_feeds.py --config config/config.yaml --out output/custom-feeds --max-age-days 30
 
       - name: Serve custom feeds on localhost
         if: success()

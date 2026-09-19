@@ -74,6 +74,23 @@ SERVE_BASE = "http://127.0.0.1:8899"
 ARTICLE_EXT = re.compile(r"\.(?:s?html?|shtml|jsp|aspx|php)(?:\?|$)", re.I)
 SKIP_HREF = re.compile(r"(?:^|/)(?:index|default)\.(?:s?html?)$|^javascript:|^mailto:|^#", re.I)
 
+# 页面页脚 / 导航 / 备案号等噪音链接
+JUNK_TITLE = re.compile(
+    r"ICP备|公网安备|版权所有|网站地图|联系我们|关于我们|主办单位|承办单位|"
+    r"技术支持|无障碍|网站声明|隐私政策|简体|繁體|^English$|^登录$|^注册$|"
+    r"^首页$|门户网站|政府网站找错|违法和不良信息|举报电话|^http", re.I)
+
+
+def _registrable(host: str) -> str:
+    """取可注册域名，用于判断链接是否属于同一站点（gov.cn / com.cn 等按三级算）。"""
+    host = (host or "").lower().split(":")[0]
+    parts = host.split(".")
+    if len(parts) <= 2:
+        return host
+    if parts[-2] in ("gov", "com", "org", "edu", "net", "ac") and parts[-1] == "cn":
+        return ".".join(parts[-3:])
+    return ".".join(parts[-2:])
+
 
 def log(*a) -> None:
     print(*a, flush=True)
@@ -105,10 +122,18 @@ def fetch(url: str, timeout: int = 25, retries: int = 2,
 
 
 # ---------------------------------------------------------------- 列表探测
-def _article_like(title: str, href: str) -> bool:
+def _article_like(title: str, href: str, base_host: str = "") -> bool:
     if not (8 <= len(title) <= 120):
         return False
+    if JUNK_TITLE.search(title):
+        return False
+    # 标题必须含中文或足够长，挡掉纯代码/纯链接标题
+    if not re.search(r"[\u4e00-\u9fa5]", title) and len(title) < 16:
+        return False
     if SKIP_HREF.search(urlparse(href).path or ""):
+        return False
+    # 同站校验：挡掉页脚里指向其它部委/网站的外链
+    if base_host and _registrable(urlparse(href).netloc) != base_host:
         return False
     if ARTICLE_EXT.search(href):
         return True
@@ -116,6 +141,7 @@ def _article_like(title: str, href: str) -> bool:
 
 
 def detect_items(soup: BeautifulSoup, base_url: str, min_items: int = 3):
+    base_host = _registrable(urlparse(base_url).netloc)
     best, best_key = [], (-1, 0)
     for el in soup.find_all(["ul", "div", "table", "tbody", "dl"]):
         links = el.find_all("a", href=True)
@@ -125,7 +151,7 @@ def detect_items(soup: BeautifulSoup, base_url: str, min_items: int = 3):
         for a in links:
             title = a.get_text(" ", strip=True)
             href = urljoin(base_url, a["href"])
-            if not href.startswith("http") or not _article_like(title, href):
+            if not href.startswith("http") or not _article_like(title, href, base_host):
                 continue
             picked.append((title, href, a.find_parent(["li", "tr", "dd", "div"]) or a))
         if len(picked) < min_items:
