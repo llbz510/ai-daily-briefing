@@ -1,0 +1,36 @@
+name: Check AI Model
+
+# 诊断工具：列出 AI_API_BASE 上可用的模型 id，并验证 Key 是否可用
+# 用法：Actions 页面 → 本 workflow → Run workflow
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Inspect AI config and list models
+        env:
+          AI_API_KEY: ${{ secrets.AI_API_KEY }}
+          AI_API_BASE: ${{ secrets.AI_API_BASE }}
+          AI_MODEL: ${{ secrets.AI_MODEL }}
+        run: |
+          echo "AI_API_BASE configured : $([ -n "$AI_API_BASE" ] && echo YES || echo NO)"
+          echo "AI_API_KEY  configured : $([ -n "$AI_API_KEY" ] && echo YES || echo NO)"
+          echo "AI_MODEL    configured : $([ -n "$AI_MODEL" ] && echo YES || echo NO)"
+          echo ""
+          echo "AI_MODEL value in 'provider/model' form? -> $AI_MODEL"
+          case "$AI_MODEL" in
+            */*) echo "  OK: contains a provider prefix";;
+            *)   echo "  PROBLEM: litellm needs 'provider/model', e.g. deepseek/deepseek-chat";;
+          esac
+          echo ""
+          echo "================ GET {AI_API_BASE}/models ================"
+          BASE="${AI_API_BASE%/}"
+          curl -s -m 30 "${BASE}/models" -H "Authorization: Bearer ${AI_API_KEY}" || echo "(request failed)"
+          echo ""
+          echo "================ done ================"
