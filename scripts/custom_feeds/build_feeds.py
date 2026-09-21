@@ -347,11 +347,21 @@ def _collect_bilibili(payload: str, name: str, seen: set, items: list, cutoff,
         log(f"    [warn] UP 主 uid 必须是纯数字，收到 {uid!r}")
         return 0
 
-    headers = {**HEADERS, "Referer": f"https://space.bilibili.com/{uid}/video",
-               "Origin": "https://space.bilibili.com"}
+    # 必须用同一个 Session：
+    #   B 站会给 /x/web-interface/nav 下发 buvid3 等指纹 cookie，
+    #   后续投稿接口要靠它过风控。用裸 requests.get 会丢 cookie，
+    #   导致 -352「风控校验失败」或 HTTP 412。
+    sess = requests.Session()
+    sess.headers.update({**HEADERS,
+                         "Referer": f"https://space.bilibili.com/{uid}/video",
+                         "Origin": "https://space.bilibili.com"})
     try:
-        nav = requests.get("https://api.bilibili.com/x/web-interface/nav",
-                           headers=headers, timeout=20).json()
+        sess.get("https://www.bilibili.com/", timeout=20)      # 取基础 cookie
+    except Exception:                               # noqa: BLE001
+        pass
+    try:
+        nav = sess.get("https://api.bilibili.com/x/web-interface/nav",
+                       timeout=20).json()
     except Exception as e:                          # noqa: BLE001
         log(f"    [warn] 取 WBI 密钥失败: {type(e).__name__}: {str(e)[:60]}")
         return 0
@@ -368,8 +378,8 @@ def _collect_bilibili(payload: str, name: str, seen: set, items: list, cutoff,
                             "platform": "web", "web_location": "1550101"},
                            img_key, sub_key)
         try:
-            resp = requests.get("https://api.bilibili.com/x/space/wbi/arc/search",
-                                params=params, headers=headers, timeout=25)
+            resp = sess.get("https://api.bilibili.com/x/space/wbi/arc/search",
+                            params=params, timeout=25)
         except Exception as e:                      # noqa: BLE001
             log(f"    [warn] 投稿接口网络异常: {type(e).__name__}: {str(e)[:60]}")
             time.sleep(5 * (attempt + 1))
