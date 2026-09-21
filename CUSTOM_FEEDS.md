@@ -167,6 +167,17 @@
 | `policysrc:gov_search?categories=bumenfile&per_page=20` | 只要部门文件，取 20 条 |
 | `policysrc:https://某政府站/列表页` | **任意列表页** —— 自动探测列表结构，不用写选择器 |
 
+### `bilisrc:` —— B站 UP 主
+
+| 写法 | 说明 |
+|---|---|
+| `bilisrc:65564239` | 抓该 UP 主最新 20 条投稿 |
+| `bilisrc:65564239?limit=5` | 只要最新 5 条（最多 50） |
+
+> uid 是空间地址里那串数字：`space.bilibili.com/`**`65564239`** `/video`
+>
+> 走 B 站官方 API + WBI 签名，**境外 IP 直连可用，不需要 cookie、代理或 yt-dlp**（见「已知坑 7」）。
+
 `categories` 可选值（逗号分隔，可组合）：
 
 | 值 | 含义 |
@@ -211,6 +222,14 @@
 ### 行情
 
 腾讯行情接口，A股指数 6 个 + 港股指数 2 个 + 美股指数 2 个 + 自选个股 5 个。
+
+### B站 UP 主
+
+| 名称 | uid | 说明 |
+|---|---|---|
+| B站·IT咖啡馆 | 65564239 | 「Github一周热点」系列，约每周一期 |
+
+> 这类源放在**独立展示区**（`display.standalone.rss_feeds`），绕过关键词筛选，保证不漏。
 
 ---
 
@@ -405,3 +424,30 @@ python scripts/custom_feeds/build_feeds.py --config config/config.yaml --out out
 2. **噪音词过滤** —— 挡掉含 ICP备 / 公网安备 / 版权所有 / 网站地图 等字样的条目
 
 仍抓不干净时，可以在该源配置里手填选择器（在 `build_feeds.py` 的 `detect_items` 调用处传入，或改用更精确的栏目页 URL）。
+
+### 7. B站信源：网页被 412 封，但 API 能用 ⚠️
+
+**踩坑记录（2026-09，从 GitHub Actions 美国 IP 实测 13 条路径）**
+
+| 路径 | 结果 |
+|---|---|
+| yt-dlp 抓空间页 / 视频页 | ❌ `HTTP 412 Precondition Failed` |
+| 套 Cloudflare WARP 换出口 IP | ❌ 仍 412（CF 的 IP 也被封） |
+| RSSHub 公共实例 ×10 | ❌ 全部 403 / 503 / 超时 / 连不上 |
+| 官方 API（不带 WBI 签名） | ❌ `-799 请求过于频繁` |
+| **官方 API + WBI 签名** | ✅ **`code=0`，直连可用** |
+
+**结论**：被 WAF 拦的是**网页**（yt-dlp 走的路径），**API 没事**。
+所以 `bilisrc:` 用的是 `x/space/wbi/arc/search` + WBI 签名，纯 `requests` 实现。
+
+**两个必须保持的实现细节：**
+
+1. **必须用同一个 `requests.Session()`** —— B 站会通过 `/x/web-interface/nav`
+   下发 `buvid3` 指纹 cookie，投稿接口靠它过风控。用裸 `requests.get()`
+   每次都是新会话，cookie 丢失 → `-352 风控校验失败` 或 `HTTP 412`。
+2. **必须带退避重试** —— 即使实现正确，B 站仍会间歇性返回 `-352`。
+   实测第 1、2 次失败、第 3 次成功是常态。代码里做了 3 次尝试（5s / 10s / 15s 退避）。
+
+**如果哪天 B 站彻底封了 API**：日志里会出现「三次尝试均未取到投稿（B站风控）」，
+该源当次返回 0 条，**不影响其它源和推送**（已验证）。此时可以考虑：
+配 cookie、换代理，或把这个源先 `enabled: false` 关掉。
