@@ -42,20 +42,20 @@
         港股 hk00700；港股指数 hkHSI/hkHSTECH；美股 usAAPL；
         美股指数 usINX/usIXIC/usDJI。不写名称则自动取。
     bilisrc:<up主 uid>[?limit=10]
-        B 站 UP 主投稿更新，用 yt-dlp 抓取（B 站官方接口有强反爬，免登录不可用）。
-        uid 是空间地址里的那串数字：space.bilibili.com/<uid>
+        B 站 UP 主投稿更新。uid 是空间地址里那串数字：space.bilibili.com/<uid>
+        走官方 API + WBI 签名，境外 IP 直连可用，无需 cookie / 代理 / yt-dlp。
 
-依赖: requests, beautifulsoup4, lxml, pyyaml, yt-dlp（抓 B 站时才需要）
+依赖: requests, beautifulsoup4, lxml, pyyaml
 """
 from __future__ import annotations
 
 import argparse
 import datetime as dt
-import json
+import hashlib
 import re
-import subprocess
 import sys
 import time
+import urllib.parse
 from email.utils import format_datetime
 from pathlib import Path
 from urllib.parse import urljoin, urlparse, parse_qs
@@ -302,14 +302,36 @@ def collect_policy(entries: list, max_age_days: int, max_items: int) -> list:
 
 
 # ---------------------------------------------------------------- B站 UP 主
-def _collect_bilibili(payload: str, name: str, seen: set, items: list, cutoff,
-                      default_limit: int = 10) -> int:
-    """
-    用 yt-dlp 抓 B 站 UP 主的投稿列表。
+# WBI 签名用的混淆表（B 站前端固定值）
+_WBI_TAB = [46, 47, 18, 2, 53, 8, 23, 32, 15, 50, 10, 31, 58, 3, 45, 35, 27, 43, 5, 49,
+            33, 9, 42, 19, 29, 28, 14, 39, 12, 38, 41, 13, 37, 48, 7, 16, 24, 55, 40,
+            61, 26, 17, 0, 1, 60, 51, 30, 4, 22, 25, 54, 21, 56, 59, 6, 63, 57, 62, 11,
+            36, 20, 34, 44, 52]
 
-    B 站空间接口有强反爬（web 接口 -412 request was banned、动态接口 -352、
-    搜索接口 -1200 被降级过滤），免登录拿不到数据。yt-dlp 内置的 B 站提取器
-    可以稳定拿到标题、发布日期和链接，是目前唯一可靠的免登录方案。
+
+def _wbi_sign(params: dict, img_key: str, sub_key: str) -> dict:
+    """B站 WBI 签名：img_key+sub_key 按固定表重排成 mixin key，再对排序后的 query 做 md5。"""
+    mixin = "".join((img_key + sub_key)[i] for i in _WBI_TAB)[:32]
+    p = dict(params)
+    p["wts"] = round(time.time())
+    p = dict(sorted(p.items()))
+    p = {k: "".join(c for c in str(v) if c not in "!'()*") for k, v in p.items()}
+    query = urllib.parse.urlencode(p)
+    p["w_rid"] = hashlib.md5((query + mixin).encode()).hexdigest()
+    return p
+
+
+def _collect_bilibili(payload: str, name: str, seen: set, items: list, cutoff,
+                      default_limit: int = 20) -> int:
+    """
+    抓 B 站 UP 主投稿列表（官方接口 + WBI 签名）。
+
+    实测结论（2026-09，从 GitHub Actions 美国 IP 测 13 条路径）：
+      * 网页版空间页（含 yt-dlp 走的网页路径）被 B 站 WAF 拦死，
+        境外 IP 一律 HTTP 412 Precondition Failed；套 Cloudflare WARP 换 IP 也无效。
+      * 但 **WBI 签名的官方 API** `x/space/wbi/arc/search` 境外 IP 直连即可用
+        （code=0），无需 cookie、无需代理。
+    所以这里用 API，不用 yt-dlp，也不依赖任何额外二进制。
 
     payload 形如:  65564239        或        65564239?limit=5
     """
@@ -318,66 +340,100 @@ def _collect_bilibili(payload: str, name: str, seen: set, items: list, cutoff,
     if "?" in payload:
         qs = {k: v[0] for k, v in parse_qs(payload.split("?", 1)[1]).items()}
         try:
-            limit = int(qs.get("limit", default_limit))
+            limit = max(1, min(50, int(qs.get("limit", default_limit))))
         except (TypeError, ValueError):
             pass
     if not uid.isdigit():
         log(f"    [warn] UP 主 uid 必须是纯数字，收到 {uid!r}")
         return 0
 
-    cmd = [sys.executable, "-m", "yt_dlp", "--playlist-end", str(limit),
-           "--dump-json", "--skip-download", "--no-warnings",
-           f"https://space.bilibili.com/{uid}/video"]
+    headers = {**HEADERS, "Referer": f"https://space.bilibili.com/{uid}/video",
+               "Origin": "https://space.bilibili.com"}
     try:
-        proc = subprocess.run(cmd, capture_output=True, text=True,
-                              encoding="utf-8", errors="replace", timeout=300)
-    except FileNotFoundError:
-        log("    [warn] 未安装 yt-dlp，跳过（pip install yt-dlp）")
+        nav = requests.get("https://api.bilibili.com/x/web-interface/nav",
+                           headers=headers, timeout=20).json()
+    except Exception as e:                          # noqa: BLE001
+        log(f"    [warn] 取 WBI 密钥失败: {type(e).__name__}: {str(e)[:60]}")
         return 0
-    except subprocess.TimeoutExpired:
-        log("    [warn] yt-dlp 超时（300 秒）")
+    wbi = ((nav.get("data") or {}).get("wbi_img")) or {}
+    img_key = (wbi.get("img_url") or "").rsplit("/", 1)[-1].split(".")[0]
+    sub_key = (wbi.get("sub_url") or "").rsplit("/", 1)[-1].split(".")[0]
+    if not (img_key and sub_key):
+        log("    [warn] 未能解析 WBI 密钥，跳过")
         return 0
 
-    raw = [l for l in (proc.stdout or "").splitlines() if l.strip().startswith("{")]
-    if not raw:
-        tail = (proc.stderr or "").strip().splitlines()
-        log(f"    [warn] yt-dlp 未返回数据：{tail[-1][:90] if tail else '无输出'}")
+    vlist = []
+    for attempt in range(3):
+        params = _wbi_sign({"mid": uid, "ps": limit, "pn": 1, "order": "pubdate",
+                            "platform": "web", "web_location": "1550101"},
+                           img_key, sub_key)
+        try:
+            resp = requests.get("https://api.bilibili.com/x/space/wbi/arc/search",
+                                params=params, headers=headers, timeout=25)
+        except Exception as e:                      # noqa: BLE001
+            log(f"    [warn] 投稿接口网络异常: {type(e).__name__}: {str(e)[:60]}")
+            time.sleep(5 * (attempt + 1))
+            continue
+
+        if resp.status_code != 200:
+            log(f"    [warn] 接口 HTTP {resp.status_code}（风控页），"
+                f"{5 * (attempt + 1)}s 后重试")
+            time.sleep(5 * (attempt + 1))
+            continue
+
+        try:
+            j = resp.json()
+        except ValueError:
+            log(f"    [warn] 接口返回非 JSON（HTTP {resp.status_code}），"
+                f"{5 * (attempt + 1)}s 后重试")
+            time.sleep(5 * (attempt + 1))
+            continue
+
+        code = j.get("code")
+        if code == 0:
+            vlist = ((j.get("data") or {}).get("list") or {}).get("vlist") or []
+            break
+        if code in (-799, -412, -509, -352):        # 限流 / 风控，退避重试
+            log(f"    [warn] 接口限流 code={code} {j.get('message')}，"
+                f"{5 * (attempt + 1)}s 后重试")
+            time.sleep(5 * (attempt + 1))
+            continue
+        log(f"    [warn] 投稿接口失败 code={code} msg={j.get('message')}")
+        return 0
+
+    if not vlist:
+        log("    [warn] 三次尝试均未取到投稿（B站风控），本次跳过该源")
         return 0
 
     added = 0
-    for line in raw:
-        try:
-            d = json.loads(line)
-        except json.JSONDecodeError:
+    for v in vlist:
+        bvid = v.get("bvid") or ""
+        title = (v.get("title") or "").strip()
+        if not bvid or not title:
             continue
-        vid = d.get("id") or ""
-        title = (d.get("title") or "").strip()
-        if not vid or not title:
-            continue
-        link = d.get("webpage_url") or f"https://www.bilibili.com/video/{vid}"
+        link = f"https://www.bilibili.com/video/{bvid}"
         if link in seen:
             continue
-        ud = str(d.get("upload_date") or "")
-        if len(ud) == 8 and ud.isdigit():
-            date = dt.datetime(int(ud[:4]), int(ud[4:6]), int(ud[6:]), 9, 0, tzinfo=CST)
-        else:
-            date = dt.datetime.now(CST)
+        ts = v.get("created")
+        date = dt.datetime.fromtimestamp(ts, CST) if ts else dt.datetime.now(CST)
         if cutoff and date < cutoff:
             continue
         seen.add(link)
         bits = []
-        if d.get("uploader"):
-            bits.append(str(d["uploader"]))
+        if v.get("author"):
+            bits.append(str(v["author"]))
         try:
-            m, s = divmod(int(d.get("duration") or 0), 60)
+            m, s = divmod(int(v.get("length") or 0), 60)
             if m or s:
                 bits.append(f"时长 {m}:{s:02d}")
         except (TypeError, ValueError):
             pass
+        if v.get("play"):
+            bits.append(f"播放 {v['play']}")
         items.append({"title": title[:180], "link": link, "date": date,
                       "source": name, "desc": " · ".join(bits)})
         added += 1
-    log(f"    yt-dlp 返回 {len(raw)} 条，纳入 {added} 条")
+    log(f"    接口返回 {len(vlist)} 条，纳入 {added} 条")
     return added
 
 
