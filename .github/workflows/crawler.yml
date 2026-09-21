@@ -35,8 +35,10 @@ on:
     #   "15 * * * *"     → 每小时第15分钟 / minute 15 every hour
     #   "30 0-14 * * *"  → 北京时间 8:00-22:00 每小时第30分钟 / Beijing 8am-10pm
     #
-    # 每天早上 8:00（北京时间）= UTC 0:00
-    - cron: "0 0 * * *"
+    # 每小时第 23 分（避开整点——GitHub 在整点最拥堵，延迟最严重）
+    # 具体什么时候推送由 config/timeline.yaml 的「早间日报」窗口决定，
+    # 只有落在 06:00-11:00（北京时间）的那次运行才会推送，且只推一次。
+    - cron: "23 * * * *"
 
   workflow_dispatch:
 
@@ -109,6 +111,23 @@ jobs:
       #     echo "⏸️  Sleeping for ${DELAY} seconds to spread the load..."
       #     sleep ${DELAY}s
       #     echo "▶️  Delay finished. Starting crawler..."
+
+      # ────────────────────────────────────────────────────────────────
+      # 💾 状态缓存
+      #
+      # 把 output/ 在多次运行之间保留下来，作用有两个：
+      #   1. 让 timeline 的 once.push 生效 —— 否则早间窗口内每次运行都会推一次
+      #   2. 让 TrendRadar 的去重 / 增量统计正常工作
+      # 用 run_id 作 key 保证每次都能写入新缓存，restore-keys 取最近一次。
+      # ────────────────────────────────────────────────────────────────
+      - name: Restore crawler state
+        if: success()
+        uses: actions/cache@v4
+        with:
+          path: output
+          key: trendradar-state-${{ github.run_id }}
+          restore-keys: |
+            trendradar-state-
 
       - name: Set up Python
         if: success()
