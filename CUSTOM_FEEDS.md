@@ -376,6 +376,91 @@ python scripts/custom_feeds/build_feeds.py --config config/config.yaml --out out
 
 ---
 
+---
+
+## 推送时间与可靠性 ⚠️ 重要
+
+### 当前设计
+
+| 项 | 值 |
+|---|---|
+| 触发频率 | **每小时第 23 分**（`cron: "23 * * * *"`） |
+| 推送窗口 | **北京时间 06:00 – 11:00** |
+| 窗口内第 1 次运行 | 采集 + AI 分析 + 推送 |
+| 同日窗口内后续运行 | 采集，**跳过分析和推送**（不重复打扰、不重复扣 API 费用） |
+| 窗口外运行 | **只采集**，不分析、不推送 |
+
+### 为什么窗口开这么宽（5 小时）？
+
+因为 **GitHub Actions 的定时任务非常不准**。实测本仓库：
+
+| cron 计划 | 实际执行（北京时间） | 延迟 |
+|---|---|---|
+| 每小时 :33 | 01:46 / 05:06 / 07:29 / 09:26 / 14:19 | 计划 13 次**只跑了 5 次** |
+| 每天 00:00 UTC | 09-20 **12:17** | 晚 4h17m |
+| 每天 00:00 UTC | 09-21 **12:15** | 晚 4h15m |
+
+原因是多方面的，且是 GitHub 已知问题：
+
+- **`00:00 UTC` 是全球最拥堵的 cron 时刻** —— GitHub 官方文档明确提醒，
+  整点（尤其一天开始时）负载最高，任务会被延迟
+- 免费/公开仓库的定时任务优先级低，延迟可能达**数小时**
+- 部分计划直接**被丢弃**（不是取消，是根本没创建）
+
+社区同类报告：
+[Reliability issues with GitHub actions, with cron based schedule](https://stackoverflow.com/questions/79534419/reliability-issues-with-github-actions-with-cron-based-schedule) ·
+[cron job · community discussion #194300](https://github.com/orgs/community/discussions/194300) ·
+[GitHub Actionsの実行遅延をCloud Schedulerで解消する](https://tech.pepabo.com/2026/05/11/cloud-workflows-github-actions-trigger/)
+
+**所以策略是：让运行频率足够高（每小时），再用一个宽窗口去接住它。**
+只要 06:00–11:00 之间有任何一次运行落地，日报就会发出——实测这一天里
+07:29 和 09:26 各落地了一次，完全够用。
+
+**代价**：推送时间会在 06:00–11:00 之间浮动，不保证整点。
+
+### 如果要精确到点（可选）
+
+GitHub 自己的 cron 做不到。需要**外部定时器**在精确时间调用 `workflow_dispatch`：
+
+```bash
+curl -X POST \
+  -H "Authorization: Bearer <细粒度PAT，仅需 Actions: write>" \
+  -H "Accept: application/vnd.github+json" \
+  https://api.github.com/repos/llbz510/ai-daily-briefing/actions/workflows/crawler.yml/dispatches \
+  -d '{"ref":"main"}'
+```
+
+免费可用：cron-job.org（网页配置，无需服务器）、Cloudflare Workers Cron Trigger。
+
+`workflow_dispatch` 触发的运行**启动很快**（实测 10 秒内开始，2-3 分钟完成），
+不受定时调度延迟影响。代价是要在第三方服务里存一个 PAT。
+
+> 用这条路时，记得把窗口留宽一点做兜底（外部触发失败时 GitHub 的定时还能救）。
+
+### 状态缓存（不要删）
+
+`crawler.yml` 里有一个 `Restore crawler state` 步骤，用 `actions/cache` 缓存 `output/`。
+
+**它是「窗口内只推一次」能生效的前提。** TrendRadar 的 `once.push` 去重
+依赖存储后端记录状态，而 GitHub Actions 每次都是全新检出——不缓存的话，
+窗口内每次运行都会重复推送一次。
+
+日志里能看到判定结果：
+
+```
+[AI]   调度器: 时间段 早间日报 今天已分析过，跳过
+[推送] 调度器: 时间段 早间日报 今天已推送过，跳过
+```
+
+### 想改推送时间
+
+打开可视化编辑器 → **timeline.yaml** 面板 → 找 `custom` 预设下的
+`morning_push` 时间段，改 `start` / `end`（24 小时制，北京时间）。
+
+> 建议窗口**不要窄于 3 小时**，否则可能因为延迟而整天不推送。
+
+---
+
 ## 已知坑（改配置前先看）
 
 ### 1. 运行时配置必须和原配置放在同一目录 ⚠️
