@@ -157,6 +157,10 @@ rss:
     #       腾讯行情接口。A股 sh600519 / sz000001；A股指数 sh000001；
     #       港股 hk00700；港股指数 hkHSI / hkHSTECH；美股 usAAPL；
     #       美股指数 usINX / usIXIC / usDJI。不写名称会自动取。
+    #   bilisrc:UP主uid[?limit=10]
+    #       B站 UP 主投稿更新。uid 是空间地址里那串数字，
+    #       例如 space.bilibili.com/65564239 -> bilisrc:65564239
+    #       （B站官方接口有强反爬，这里用 yt-dlp 抓，需装 yt-dlp）
     #
     # 💡 这些条目可以直接用官方可视化编辑器管理：
     #    https://sansan0.github.io/TrendRadar/  → RSS 源 面板 → 添加/编辑/启用
@@ -184,6 +188,10 @@ rss:
     - id: "market-quotes"
       name: "行情速览"
       url: "marketsrc:sh000001=上证指数,sz399001=深证成指,sz399006=创业板指,sh000688=科创50,sh000300=沪深300,sh000905=中证500,hkHSI=恒生指数,hkHSTECH=恒生科技指数,usINX=标普500,usIXIC=纳斯达克,sh600519=贵州茅台,sz000001=平安银行,hk00700=腾讯控股,usAAPL=苹果,usNVDA=英伟达"
+
+    - id: "bili-itcoffee"
+      name: "B站·IT咖啡馆"
+      url: "bilisrc:65564239?limit=10"
 
     # 自定义源示例
     # - id: "custom-feed"
@@ -290,7 +298,7 @@ display:
   # 推送展示由 regions.standalone 控制，AI 分析由 ai_analysis.include_standalone 控制
   standalone:
     platforms: []     # 热榜平台 ID 列表（如 ["zhihu", "weibo"]）
-    rss_feeds: ["market-quotes"]                                # RSS 源 ID 列表（如 ["hacker-news"]）
+    rss_feeds: ["market-quotes", "bili-itcoffee"]                                # RSS 源 ID 列表（如 ["hacker-news"]）
     max_items: 20                                # 每个源最多展示条数（0=不限制）
 
 

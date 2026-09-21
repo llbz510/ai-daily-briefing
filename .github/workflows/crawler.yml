@@ -126,7 +126,7 @@ jobs:
 
       - name: Install custom feed deps
         if: success()
-        run: python -m pip install --quiet --disable-pip-version-check requests beautifulsoup4 lxml pyyaml
+        run: python -m pip install --quiet --disable-pip-version-check requests beautifulsoup4 lxml pyyaml yt-dlp
 
       - name: Build custom feeds (policy + market)
         if: success()

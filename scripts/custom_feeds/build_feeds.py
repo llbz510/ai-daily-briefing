@@ -41,14 +41,19 @@
         腾讯行情接口代码。A股 sh600519 / sz000001；A股指数 sh000001；
         港股 hk00700；港股指数 hkHSI/hkHSTECH；美股 usAAPL；
         美股指数 usINX/usIXIC/usDJI。不写名称则自动取。
+    bilisrc:<up主 uid>[?limit=10]
+        B 站 UP 主投稿更新，用 yt-dlp 抓取（B 站官方接口有强反爬，免登录不可用）。
+        uid 是空间地址里的那串数字：space.bilibili.com/<uid>
 
-依赖: requests, beautifulsoup4, lxml, pyyaml
+依赖: requests, beautifulsoup4, lxml, pyyaml, yt-dlp（抓 B 站时才需要）
 """
 from __future__ import annotations
 
 import argparse
 import datetime as dt
+import json
 import re
+import subprocess
 import sys
 import time
 from email.utils import format_datetime
@@ -67,9 +72,18 @@ CST = dt.timezone(dt.timedelta(hours=8))
 
 POLICY_SCHEME = "policysrc:"
 MARKET_SCHEME = "marketsrc:"
+BILI_SCHEME = "bilisrc:"
 GOV_API = "https://sousuo.www.gov.cn/search-gov/data"
 TENCENT_API = "https://qt.gtimg.cn/q="
 SERVE_BASE = "http://127.0.0.1:8899"
+
+# 伪协议 -> (类别, 输出文件名, RSS 标题, RSS link)
+SCHEME_MAP = {
+    POLICY_SCHEME: ("policy", "policy.xml", "政策发布", "https://www.gov.cn/zhengce/"),
+    MARKET_SCHEME: ("market", "market.xml", "行情速览", "https://gu.qq.com/"),
+    BILI_SCHEME:   ("bili",   "bili.xml",   "B站关注",  "https://www.bilibili.com/"),
+}
+SCHEME_OF_KIND = {kind: scheme for scheme, (kind, *_) in SCHEME_MAP.items()}
 
 ARTICLE_EXT = re.compile(r"\.(?:s?html?|shtml|jsp|aspx|php)(?:\?|$)", re.I)
 SKIP_HREF = re.compile(r"(?:^|/)(?:index|default)\.(?:s?html?)$|^javascript:|^mailto:|^#", re.I)
@@ -287,6 +301,86 @@ def collect_policy(entries: list, max_age_days: int, max_items: int) -> list:
     return items[:max_items]
 
 
+# ---------------------------------------------------------------- B站 UP 主
+def _collect_bilibili(payload: str, name: str, seen: set, items: list, cutoff,
+                      default_limit: int = 10) -> int:
+    """
+    用 yt-dlp 抓 B 站 UP 主的投稿列表。
+
+    B 站空间接口有强反爬（web 接口 -412 request was banned、动态接口 -352、
+    搜索接口 -1200 被降级过滤），免登录拿不到数据。yt-dlp 内置的 B 站提取器
+    可以稳定拿到标题、发布日期和链接，是目前唯一可靠的免登录方案。
+
+    payload 形如:  65564239        或        65564239?limit=5
+    """
+    uid = payload.split("?", 1)[0].strip()
+    limit = default_limit
+    if "?" in payload:
+        qs = {k: v[0] for k, v in parse_qs(payload.split("?", 1)[1]).items()}
+        try:
+            limit = int(qs.get("limit", default_limit))
+        except (TypeError, ValueError):
+            pass
+    if not uid.isdigit():
+        log(f"    [warn] UP 主 uid 必须是纯数字，收到 {uid!r}")
+        return 0
+
+    cmd = [sys.executable, "-m", "yt_dlp", "--playlist-end", str(limit),
+           "--dump-json", "--skip-download", "--no-warnings",
+           f"https://space.bilibili.com/{uid}/video"]
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True,
+                              encoding="utf-8", errors="replace", timeout=300)
+    except FileNotFoundError:
+        log("    [warn] 未安装 yt-dlp，跳过（pip install yt-dlp）")
+        return 0
+    except subprocess.TimeoutExpired:
+        log("    [warn] yt-dlp 超时（300 秒）")
+        return 0
+
+    raw = [l for l in (proc.stdout or "").splitlines() if l.strip().startswith("{")]
+    if not raw:
+        tail = (proc.stderr or "").strip().splitlines()
+        log(f"    [warn] yt-dlp 未返回数据：{tail[-1][:90] if tail else '无输出'}")
+        return 0
+
+    added = 0
+    for line in raw:
+        try:
+            d = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        vid = d.get("id") or ""
+        title = (d.get("title") or "").strip()
+        if not vid or not title:
+            continue
+        link = d.get("webpage_url") or f"https://www.bilibili.com/video/{vid}"
+        if link in seen:
+            continue
+        ud = str(d.get("upload_date") or "")
+        if len(ud) == 8 and ud.isdigit():
+            date = dt.datetime(int(ud[:4]), int(ud[4:6]), int(ud[6:]), 9, 0, tzinfo=CST)
+        else:
+            date = dt.datetime.now(CST)
+        if cutoff and date < cutoff:
+            continue
+        seen.add(link)
+        bits = []
+        if d.get("uploader"):
+            bits.append(str(d["uploader"]))
+        try:
+            m, s = divmod(int(d.get("duration") or 0), 60)
+            if m or s:
+                bits.append(f"时长 {m}:{s:02d}")
+        except (TypeError, ValueError):
+            pass
+        items.append({"title": title[:180], "link": link, "date": date,
+                      "source": name, "desc": " · ".join(bits)})
+        added += 1
+    log(f"    yt-dlp 返回 {len(raw)} 条，纳入 {added} 条")
+    return added
+
+
 # ---------------------------------------------------------------- 行情采集
 def collect_market(entries: list, max_items: int) -> list:
     codes, alias = [], {}
@@ -344,8 +438,14 @@ def collect_market(entries: list, max_items: int) -> list:
 
 # ---------------------------------------------------------------- 运行时配置
 def write_runtime_config(cfg_path: Path, out_path: Path,
-                         policy_url: str | None, market_url: str | None) -> bool:
-    """把伪协议条目替换成本地 HTTP 地址；没有任何自定义源时返回 False。"""
+                         url_by_kind: dict) -> bool:
+    """
+    把伪协议条目替换成本地 HTTP 地址；没有任何自定义源时返回 False。
+
+    url_by_kind: {"policy": "http://127.0.0.1:8899/policy.xml", ...}
+    同类只保留第一条（生成器已把它们合并成一个 RSS 文件，
+    多条会指向同一个 URL 导致重复抓取）。
+    """
     try:
         doc = yaml.safe_load(cfg_path.read_text(encoding="utf-8"))
     except Exception as e:                          # noqa: BLE001
@@ -361,14 +461,13 @@ def write_runtime_config(cfg_path: Path, out_path: Path,
             out_feeds.append(f)
             continue
         url = str(f.get("url", ""))
-        kind = ("policy" if url.startswith(POLICY_SCHEME)
-                else "market" if url.startswith(MARKET_SCHEME) else None)
+        kind = next((k for s, (k, *_) in SCHEME_MAP.items() if url.startswith(s)), None)
         if kind is None:
             out_feeds.append(f)
             continue
         if kind in seen_kind:                        # 同一类只保留第一条
             continue
-        target = policy_url if kind == "policy" else market_url
+        target = url_by_kind.get(kind)
         if not target:
             continue
         nf = dict(f)
@@ -378,7 +477,7 @@ def write_runtime_config(cfg_path: Path, out_path: Path,
         seen_kind.add(kind)
 
     if not seen_kind:
-        log("[运行时配置] 未发现 policysrc:/marketsrc: 条目，跳过生成")
+        log("[运行时配置] 未发现 policysrc:/marketsrc:/bilisrc: 条目，跳过生成")
         return False
 
     doc["rss"]["feeds"] = out_feeds
@@ -392,18 +491,19 @@ def write_runtime_config(cfg_path: Path, out_path: Path,
 
 
 # ---------------------------------------------------------------- main
-def split_entries(feeds: list):
-    pol, mkt = [], []
+def split_entries(feeds: list) -> dict:
+    """按伪协议把 rss.feeds 拆成 {kind: [(id, name, payload), ...]}。"""
+    out: dict = {k: [] for k, *_ in SCHEME_MAP.values()}
     for f in feeds or []:
         if not isinstance(f, dict) or f.get("enabled") is False:
             continue
         url = str(f.get("url", ""))
         fid, name = str(f.get("id", "?")), str(f.get("name", f.get("id", "?")))
-        if url.startswith(POLICY_SCHEME):
-            pol.append((fid, name, url[len(POLICY_SCHEME):].strip()))
-        elif url.startswith(MARKET_SCHEME):
-            mkt.append((fid, name, url[len(MARKET_SCHEME):].strip()))
-    return pol, mkt
+        for scheme, (kind, *_) in SCHEME_MAP.items():
+            if url.startswith(scheme):
+                out[kind].append((fid, name, url[len(scheme):].strip()))
+                break
+    return out
 
 
 def main() -> int:
@@ -427,42 +527,62 @@ def main() -> int:
         log(f"[error] 解析 {cfg_path} 失败: {e}")
         return 1
     feeds = ((doc.get("rss") or {}).get("feeds")) or []
-    pol_entries, mkt_entries = split_entries(feeds)
-    log(f"发现自定义源: policysrc {len(pol_entries)} 个 / marketsrc {len(mkt_entries)} 个")
+    entries = split_entries(feeds)
+    log("发现自定义源: " + " / ".join(
+        "%s %d 个" % (kind, len(v)) for kind, v in entries.items()))
 
     only = {s.strip() for s in args.only.split(",") if s.strip()}
     if only:
-        pol_entries = [e for e in pol_entries if e[0] in only]
-        mkt_entries = [e for e in mkt_entries if e[0] in only]
-        log(f"[调试模式] 只处理: {', '.join(sorted(only))} "
-            f"(匹配到 policy {len(pol_entries)} / market {len(mkt_entries)})")
-        if not pol_entries and not mkt_entries:
+        entries = {k: [e for e in v if e[0] in only] for k, v in entries.items()}
+        total = sum(len(v) for v in entries.values())
+        log(f"[调试模式] 只处理: {', '.join(sorted(only))}（匹配到 {total} 个源）")
+        if not total:
             log("[调试模式] 没有匹配的源，检查 id 是否写对")
             return 1
 
     out_dir = Path(args.out)
     out_dir.mkdir(parents=True, exist_ok=True)
-    policy_url = market_url = None
+    url_by_kind: dict = {}
 
-    if pol_entries:
+    pol = entries.get("policy") or []
+    if pol:
         log("")
         log("[政策] 开始收集")
-        items = collect_policy(pol_entries, args.max_age_days, args.max_items)
+        items = collect_policy(pol, args.max_age_days, args.max_items)
         (out_dir / "policy.xml").write_text(
             build_rss(items, "政策发布", "https://www.gov.cn/zhengce/", "政策发布聚合"),
             encoding="utf-8")
         log(f"[政策] 写入 policy.xml，共 {len(items)} 条")
-        policy_url = f"{args.serve_base}/policy.xml"
+        url_by_kind["policy"] = f"{args.serve_base}/policy.xml"
 
-    if mkt_entries:
+    mkt = entries.get("market") or []
+    if mkt:
         log("")
         log("[行情] 开始收集")
-        items = collect_market(mkt_entries, args.max_items)
+        items = collect_market(mkt, args.max_items)
         (out_dir / "market.xml").write_text(
             build_rss(items, "行情速览", "https://gu.qq.com/", "行情速览"),
             encoding="utf-8")
         log(f"[行情] 写入 market.xml，共 {len(items)} 条")
-        market_url = f"{args.serve_base}/market.xml"
+        url_by_kind["market"] = f"{args.serve_base}/market.xml"
+
+    bil = entries.get("bili") or []
+    if bil:
+        log("")
+        log("[B站] 开始收集")
+        items, seen = [], set()
+        cutoff = (dt.datetime.now(CST) - dt.timedelta(days=args.max_age_days)
+                  if args.max_age_days else None)
+        for fid, name, payload in bil:
+            log(f"  - {name}  [{fid}]")
+            _collect_bilibili(payload, name, seen, items, cutoff)
+        items.sort(key=lambda x: x["date"], reverse=True)
+        items = items[:args.max_items]
+        (out_dir / "bili.xml").write_text(
+            build_rss(items, "B站关注", "https://www.bilibili.com/", "B站 UP 主更新"),
+            encoding="utf-8")
+        log(f"[B站] 写入 bili.xml，共 {len(items)} 条")
+        url_by_kind["bili"] = f"{args.serve_base}/bili.xml"
 
     log("")
     if only:
@@ -472,7 +592,7 @@ def main() -> int:
         # TrendRadar 用 Path(CONFIG_PATH).parent 去定位 timeline.yaml，
         # 放到别处会导致「未知的预设模板」并中断整条流程。
         write_runtime_config(cfg_path, cfg_path.parent / "config.runtime.yaml",
-                             policy_url, market_url)
+                             url_by_kind)
     log(f"输出目录: {out_dir.resolve()}")
     return 0
 
