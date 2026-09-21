@@ -1,0 +1,84 @@
+name: Probe Bilibili
+
+# 临时诊断：从 GitHub Actions（境外 IP）测试各种 B 站抓取路径
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install
+        run: python -m pip install --quiet --disable-pip-version-check yt-dlp requests
+
+      - name: Probe all routes
+        run: |
+          python - <<'PY'
+          import subprocess, sys, time, requests
+          UID = "65564239"
+          UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36")
+
+          print("=" * 68)
+          print("### 1) yt-dlp 直连 B 站空间（重试 2 次）")
+          for attempt in range(1, 3):
+              p = subprocess.run([sys.executable, "-m", "yt_dlp", "--playlist-end", "3",
+                                  "--dump-json", "--skip-download", "--no-warnings",
+                                  "https://space.bilibili.com/%s/video" % UID],
+                                 capture_output=True, text=True, encoding="utf-8", timeout=180)
+              ok = len([l for l in (p.stdout or "").splitlines() if l.strip().startswith("{")])
+              print("  attempt %d -> %d 条" % (attempt, ok))
+              if ok:
+                  break
+              print("     err:", (p.stderr or "").strip().splitlines()[-1][:110])
+              time.sleep(5)
+
+          print()
+          print("### 2) RSSHub 公共实例")
+          insts = [
+              "https://rsshub.app",
+              "https://rsshub.rssforever.com",
+              "https://rss.shab.fun",
+              "https://rsshub.pseudoyu.com",
+              "https://hub.slarker.me",
+              "https://rsshub.ktachibana.party",
+              "https://rsshub.woodland.cafe",
+              "https://rsshub.liumingye.cn",
+              "https://rsshub.henry.wang",
+              "https://rsshub.everpcpc.com",
+          ]
+          for inst in insts:
+              url = inst.rstrip("/") + "/bilibili/user/video/" + UID
+              try:
+                  r = requests.get(url, headers={"User-Agent": UA}, timeout=25)
+                  n = r.text.count("<item>")
+                  print("  %-34s HTTP %-4s items=%-3d bytes=%d" % (inst, r.status_code, n, len(r.text)))
+              except Exception as e:
+                  print("  %-34s FAIL %s" % (inst, type(e).__name__ + ": " + str(e)[:40]))
+
+          print()
+          print("### 3) 直连官方接口（带 buvid3）")
+          s = requests.Session()
+          s.headers.update({"User-Agent": UA, "Referer": "https://space.bilibili.com/%s/video" % UID})
+          s.get("https://www.bilibili.com/", timeout=20)
+          print("  cookies:", list(s.cookies.keys()))
+          for name, u, prm in [
+              ("space/arc/search", "https://api.bilibili.com/x/space/arc/search",
+               {"mid": UID, "ps": 5, "pn": 1, "order": "pubdate"}),
+              ("view(BV152eS69EX4)", "https://api.bilibili.com/x/web-interface/view",
+               {"bvid": "BV152eS69EX4"}),
+          ]:
+              try:
+                  j = s.get(u, params=prm, timeout=20).json()
+                  print("  %-20s code=%s msg=%s" % (name, j.get("code"), j.get("message")))
+              except Exception as e:
+                  print("  %-20s FAIL %s" % (name, str(e)[:60]))
+          PY
